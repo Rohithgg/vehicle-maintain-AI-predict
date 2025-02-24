@@ -1,105 +1,100 @@
 import airsim
-import time
-import datetime
-import pandas as pd
-import numpy as np
 import tensorflow as tf
-from tensorflow.keras.models import load_model
-from pynput import keyboard  # For keyboard control
+import numpy as np
+import cv2
+import time
 
-# Connect to AirSim
+# ---------------------------
+# Load the trained model
+# ---------------------------
+# Replace 'path_to_your_model.h5' with the path to your saved model.
+model = tf.keras.models.load_model('bike_health_model.keras')
+
+# ---------------------------
+# Connect to AirSim and enable control
+# ---------------------------
 client = airsim.CarClient()
 client.confirmConnection()
 client.enableApiControl(True)
-
-# Load trained AI model
-model = load_model("bike_health_model.keras")
-
-# Define car controls
 car_controls = airsim.CarControls()
 
-# Define default control values
-throttle = 0.0
-steering = 0.0
-brake = 0.0
-
-# Initialize buffer for AI input
-sequence_length = 5
-buffer = []
-
-# Initialize CSV log file
-csv_file = "predict_log.csv"
-columns = ["Speed", "EngineTemperature", "FuelLevel"]
-df = pd.DataFrame(columns=columns)
-df.to_csv(csv_file, index=False)
-
-# Keyboard event handlers
-def on_press(key):
-    global throttle, steering, brake
-    try:
-        if key.char == 'w':  # Accelerate
-            throttle = min(throttle + 0.1, 1.0)
-        elif key.char == 's':  # Brake/Reverse
-            brake = min(brake + 0.1, 1.0)
-        elif key.char == 'a':  # Steer Left
-            steering = max(steering - 0.1, -1.0)
-        elif key.char == 'd':  # Steer Right
-            steering = min(steering + 0.1, 1.0)
-    except AttributeError:
-        pass
-
-def on_release(key):
-    global throttle, steering, brake
-    if key == keyboard.Key.esc:
-        return False  # Stop listener when ESC is pressed
-
-# Start keyboard listener
-listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-listener.start()
-
-# Simulation loop
+# ---------------------------
+# weather
+# airsim.simEnableWeather(True)
+# ---------------------------
+# Main control loop
+# ---------------------------
 while True:
     try:
-        # Get current timestamp
-        timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        # ---- Get Image Data ----
+        # Request a scene image from camera "0" (adjust camera ID and type as needed)
+        responses = client.simGetImages([
+            airsim.ImageRequest("0", airsim.ImageType.Scene, False, False)
+        ])
+        if len(responses) == 0:
+            print("No image received.")
+            continue
 
-        # Get car state
+        response = responses[0]
+        # Convert raw image data to a numpy array and reshape
+        img1d = np.frombuffer(response.image_data_uint8, dtype=np.uint8)
+        img_rgb = img1d.reshape(response.height, response.width, 3)
+        # Resize to the expected input size (e.g., 224x224)
+        img_resized = cv2.resize(img_rgb, (224, 224))
+        # Normalize pixel values to [0,1] if your model was trained that way
+        img_normalized = img_resized.astype(np.float32) / 255.0
+        # Expand dimensions to add the batch dimension
+        image_input = np.expand_dims(img_normalized, axis=0)
+
+        # ---- Get Telemetry Data ----
         car_state = client.getCarState()
+        # Example: Create a telemetry vector with 10 features. Adjust extraction to match your model.
+        telemetry_vector = np.array([
+            car_state.speed,
+            car_state.kinematics_estimated.linear_acceleration.x_val,
+            car_state.kinematics_estimated.linear_acceleration.y_val,
+            car_state.kinematics_estimated.linear_acceleration.z_val,
+            car_state.kinematics_estimated.orientation.x_val,
+            car_state.kinematics_estimated.orientation.y_val,
+            car_state.kinematics_estimated.orientation.z_val,
+            car_state.kinematics_estimated.orientation.w_val,
+            car_state.position.x_val,
+            car_state.position.y_val
+        ])
+        telemetry_input = telemetry_vector.reshape(1, -1)
 
-        # Simulated values
-        speed = car_state.speed  # Speed in m/s
-        rpm = speed * 100  # Simplified RPM calculation
-        fuel_level = max(100 - (speed * 0.1), 0)  # Simulated fuel consumption
+        # ---- Make Predictions ----
+        # The model returns two outputs: driving commands and maintenance alert.
+        predictions = model.predict([image_input, telemetry_input])
+        driving_preds = predictions[0][0]  # Expected order: [steering, throttle, brake]
+        maintenance_pred = predictions[1][0][0]  # Probability of requiring maintenance
 
-        # Store last 5 readings for AI model
-        buffer.append([speed, rpm, fuel_level])
-        if len(buffer) > sequence_length:
-            buffer.pop(0)
+        # ---- Apply Predictions to Car Controls ----
+        car_controls.steering = float(driving_preds[0])
+        car_controls.throttle = float(driving_preds[1])
 
-        # AI Model Prediction (When buffer is filled)
-        if len(buffer) == sequence_length:
-            input_data = np.array([buffer])  # Convert to NumPy array
-            prediction = model.predict(input_data)
+        # For braking, you may want to override throttle if the brake prediction is high.
+        brake_value = float(driving_preds[2])
+        if brake_value > 0.5:  # Threshold can be adjusted based on your training.
+            car_controls.brake = brake_value
+        else:
+            car_controls.brake = 0.0
 
-            # AI-predicted values
-            speed_pred, rpm_pred, fuel_pred = prediction[0]
-
-            # Print AI predictions
-            print(f"🚀 AI Predictions - Speed: {speed_pred:.2f}, RPM: {rpm_pred:.2f}, Fuel: {fuel_pred:.2f}")
-
-            # Save predictions to CSV
-            df = pd.DataFrame([[timestamp, speed, speed_pred, rpm, rpm_pred, fuel_level, fuel_pred]], columns=columns)
-            df.to_csv(csv_file, mode='a', header=False, index=False)
-
-        # Apply user controls
-        car_controls.throttle = throttle
-        car_controls.steering = steering
-        car_controls.brake = brake
+        # Send the control commands to the simulator.
         client.setCarControls(car_controls)
+        # collision reset
+        if car_state.collision.has_collided:
+            client.reset()
+            time.sleep(1)
 
-        # Wait before next reading
+        # ---- Predictive Maintenance Alert ----
+        if maintenance_pred > 0.5:
+            print("Maintenance Alert: Vehicle may require service soon.")
+
+        # Adjust the loop delay as needed (e.g., 100ms per iteration).
         time.sleep(0.1)
 
     except Exception as e:
-        print(f"Error: {e}")
+        print("Error in control loop:", e)
         break
+
