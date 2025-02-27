@@ -10,13 +10,16 @@ This project is a supervised learning model designed to assist in vehicle autopi
 - **Engine Health Monitoring**: Monitors the health of the vehicle's engine.
 
 ## How It Works
+_Note that this is done in simulation, and it needs to be tested for real-life cases, which includes IoT and model computing in embedded systems and etc._
 
 The model uses data collected from various sensors installed in the vehicle. This data is processed and analyzed using machine learning algorithms to provide real-time assistance and predictions. The main components include:
 
-- **Data Collection**: Sensors collect data on vehicle speed, engine performance, brake pressure, engine temperature and etc.
+- **Data Collection**: Sensors collect data on vehicle speed, engine performance, brake pressure, engine temperature, etc.
 - **Data Processing**: The collected data is processed and cleaned for analysis.
 - **Machine Learning Model**: A supervised learning model is trained on historical data to make predictions and assist the driver.
 - **Real-time Monitoring**: The system continuously monitors the vehicle's performance and provides alerts and assistance as needed.
+- **IoT for Monitoring**: Reading sensors in vehicle used for monitors and updating and displaying in moblie 
+- **Simulation testing**: This project is testing in simulation using Airsim.
 
 ## Technologies Used
 
@@ -24,6 +27,8 @@ The model uses data collected from various sensors installed in the vehicle. Thi
 - **Python**: The primary programming language for developing the model and processing data.
 - **Machine Learning Libraries**: Libraries such as Scikit-learn, TensorFlow, or PyTorch are used for building and training the machine learning models.
 - **Sensor Data**: Data from various sensors installed in the vehicle is used for analysis and predictions.
+- **Simulation**: Test simulation by using Airsim.
+- **Moblie**: App for user interface and displaying results in there. 
 
 ## Potential Development
 
